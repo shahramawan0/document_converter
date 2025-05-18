@@ -22,7 +22,7 @@ def process_pdf(pdf_path: str, file_id: str) -> dict:
     <div class="pdf-content">
         <h1>PDF Conversion Not Supported</h1>
         <p>This version only supports Word to HTML conversion.</p>
-    </div>
+                </div>
     """
     
     return {
@@ -156,35 +156,27 @@ def fix_html_for_website(html_content, file_id):
 def process_word_to_html(word_path: str, file_id: str) -> dict:
     """
     Process a Word file and convert it to HTML using CloudConvert API.
-    Returns a dict with the HTML content and path. All images are embedded as base64.
+    Returns a dict with the HTML content, focusing only on the essential parts.
     """
     try:
-        # Generate output path
+        # Make sure output directory exists
         os.makedirs("output", exist_ok=True)
-        html_file_path = f"output/{file_id}.html"
-        images_dir = f"output/{file_id}_images"
-        os.makedirs(images_dir, exist_ok=True)
         
-        print(f"Starting CloudConvert job for {word_path}")
-        
-        # Create a job using the CloudConvert API to convert Word to HTML
+        # Create a job using the CloudConvert API
         job = cloudconvert.Job.create(payload={
             "tasks": {
-                # First task: Upload the Word file
                 "upload-file": {
                     "operation": "import/upload"
                 },
-                # Second task: Convert to HTML
                 "convert-file": {
                     "operation": "convert",
                     "input": "upload-file",
                     "output_format": "html",
-                    "engine": "office",  # Use Office engine for better conversion
+                    "engine": "office",
                     "options": {
-                        "embed_images": True,  # Embed images as data URIs
+                        "embed_images": True
                     }
                 },
-                # Third task: Export the converted file
                 "export-file": {
                     "operation": "export/url",
                     "input": "convert-file"
@@ -192,33 +184,19 @@ def process_word_to_html(word_path: str, file_id: str) -> dict:
             }
         })
         
-        # Get the upload task from the job
-        upload_task_id = None
-        for task in job["tasks"]:
-            if task["operation"] == "import/upload":
-                upload_task_id = task["id"]
-                break
-        
+        # Get the upload task ID
+        upload_task_id = next((task["id"] for task in job["tasks"] if task["operation"] == "import/upload"), None)
         if not upload_task_id:
-            raise ValueError("Failed to find upload task in the job")
+            raise ValueError("Failed to find upload task")
         
-        # Get the upload task details
+        # Get the upload task and upload the file
         upload_task = cloudconvert.Task.find(id=upload_task_id)
-        
-        # Upload the Word file
-        print(f"Uploading {word_path} to CloudConvert")
         cloudconvert.Task.upload(file_name=word_path, task=upload_task)
         
         # Wait for the job to complete
-        print("Waiting for conversion to complete...")
-        export_task_id = None
-        for task in job["tasks"]:
-            if task["operation"] == "export/url":
-                export_task_id = task["id"]
-                break
-        
+        export_task_id = next((task["id"] for task in job["tasks"] if task["operation"] == "export/url"), None)
         if not export_task_id:
-            raise ValueError("Failed to find export task in the job")
+            raise ValueError("Failed to find export task")
         
         # Wait for the export task to complete
         export_task = cloudconvert.Task.wait(id=export_task_id)
@@ -227,13 +205,13 @@ def process_word_to_html(word_path: str, file_id: str) -> dict:
         if export_task["status"] != "finished":
             raise ValueError(f"Export task failed with status: {export_task['status']}")
         
-        # Download the converted HTML file and any associated files
+        # Get the result files
         files = export_task.get("result", {}).get("files", [])
         if not files:
             raise ValueError("No files found in the export task result")
         
-        # Download all files from the export (to capture any image files)
-        downloaded_files = []
+        # Download the HTML content
+        html_content = ""
         for file_info in files:
             file_url = file_info.get("url")
             filename = file_info.get("filename")
@@ -241,279 +219,40 @@ def process_word_to_html(word_path: str, file_id: str) -> dict:
             if not file_url or not filename:
                 continue
                 
-            # Download the file
-            file_path = os.path.join("output", filename)
-            print(f"Downloading file: {filename}")
-            
-            response = requests.get(file_url, stream=True)
-            response.raise_for_status()
-            
-            # Save the file
-            with open(file_path, "wb") as f:
-                for chunk in response.iter_content(chunk_size=8192):
-                    f.write(chunk)
-            
-            downloaded_files.append(file_path)
-            
-            # Extract ZIP files if needed (CloudConvert sometimes returns them)
-            if filename.endswith('.zip'):
-                try:
-                    import zipfile
-                    print(f"Extracting ZIP file: {file_path}")
-                    with zipfile.ZipFile(file_path, 'r') as zip_ref:
-                        zip_ref.extractall("output")
-                    
-                    # Check for HTML file in the extracted files
-                    for extracted_file in zip_ref.namelist():
-                        if extracted_file.endswith('.html'):
-                            html_file_path = os.path.join("output", extracted_file)
-                            print(f"Found HTML file in ZIP: {html_file_path}")
-                except Exception as zip_err:
-                    print(f"Error extracting ZIP file: {str(zip_err)}")
-        
-        # Find the main HTML file from downloaded files
-        html_file = None
-        for file_path in downloaded_files:
-            if file_path.endswith('.html'):
-                html_file = file_path
-                html_file_path = file_path
+            if filename.endswith('.html'):
+                response = requests.get(file_url)
+                response.raise_for_status()
+                html_content = response.text
                 break
         
-        if not html_file:
-            # If we couldn't find an HTML file in the downloaded files, use the default path
-            html_file = html_file_path
+        if not html_content:
+            raise ValueError("No HTML content found in the result files")
         
-        # Read the HTML content
-        with open(html_file_path, "r", encoding="utf-8") as f:
-            original_html_content = f.read()
+        # Process HTML to extract only the content after Keywords
+        soup = BeautifulSoup(html_content, 'html.parser')
         
-        # Pre-process HTML to identify and mark patterns specific to CloudConvert output
-        preprocessed_html = fix_html_for_website(original_html_content, file_id)
-        
-        # Create a directory to store extracted images
-        extracted_images_dir = os.path.join(images_dir, "extracted")
-        os.makedirs(extracted_images_dir, exist_ok=True)
-        
-        # Process the HTML with BeautifulSoup to ensure all images are embedded
-        soup = BeautifulSoup(preprocessed_html, 'html.parser')
-        
-        # Track all images for extraction and embedding
-        images = []
-        external_image_count = 0
-        embedded_image_count = 0
-        download_image_count = 0
-        cloud_convert_image_count = 0
-        
-        print(f"Processing HTML content for images")
-        
-        # Find all images in the HTML
-        for img_idx, img in enumerate(soup.find_all('img')):
-            src = img.get('src', '')
-            
-            # This handles CloudConvert-specific patterns marked during preprocessing
-            needs_base64 = img.get('data-needs-base64') == 'true'
-            original_src = img.get('data-original-src', '')
-            
-            if needs_base64 and original_src:
-                src = original_src
-                cloud_convert_image_count += 1
-                print(f"Found CloudConvert image pattern: {src}")
-            
-            print(f"Found image #{img_idx+1}: {src[:50]}{'...' if len(src) > 50 else ''}")
-            
-            # Skip empty sources
-            if not src:
-                print(f"  - Skipping empty src")
-                continue
-            
-            # If the image is already a data URI, just record it
-            if src.startswith('data:'):
-                embedded_image_count += 1
-                print(f"  - Already embedded as data URI")
-                
-                try:
-                    # Extract metadata from the data URI
-                    parts = src.split(',', 1)
-                    if len(parts) != 2:
-                        print(f"  - Invalid data URI format")
-                        continue
-                    
-                    header = parts[0]
-                    img_data = parts[1]
-                    
-                    # Get the mime type
-                    mime_match = re.search(r'data:(.*?);', header)
-                    if not mime_match:
-                        print(f"  - Could not extract mime type from data URI")
-                        mime_type = "image/jpeg"  # Default
-                    else:
-                        mime_type = mime_match.group(1)
-                    
-                    # Determine format from mime type
-                    if mime_type == "image/jpeg" or mime_type == "image/jpg":
-                        img_format = "jpg"
-                    elif mime_type == "image/png":
-                        img_format = "png"
-                    elif mime_type == "image/gif":
-                        img_format = "gif"
-                    elif mime_type == "image/svg+xml":
-                        img_format = "svg"
-                    else:
-                        img_format = "jpg"  # Default
-                    
-                    # Add to our images list
-                    images.append({
-                        "filename": f"image_{embedded_image_count}.{img_format}",
-                        "data": img_data,  # Already base64 encoded
-                        "mime_type": mime_type
-                    })
-                    
-                    # Also save the image to disk for reference
-                    try:
-                        img_binary = base64.b64decode(img_data)
-                        img_path = os.path.join(extracted_images_dir, f"image_{embedded_image_count}.{img_format}")
-                        with open(img_path, 'wb') as img_file:
-                            img_file.write(img_binary)
-                        print(f"  - Saved embedded image to {img_path}")
-                    except Exception as save_err:
-                        print(f"  - Error saving embedded image: {str(save_err)}")
-                    
-                except Exception as parse_err:
-                    print(f"  - Error parsing data URI: {str(parse_err)}")
-                    
-            else:
-                # This is an external image URL or relative path
-                external_image_count += 1
-                
-                # Check if this is a CloudConvert pattern (file_id_files/imageXXX.jpg)
-                is_cloud_convert_pattern = False
-                if f"{file_id}_files/" in src or "_files/" in src:
-                    is_cloud_convert_pattern = True
-                    print(f"  - CloudConvert image pattern detected: {src}")
-                else:
-                    print(f"  - External image (will attempt to embed): {src}")
-                
-                # For CloudConvert patterns, use special pattern matching to find the file
-                if is_cloud_convert_pattern:
-                    local_image_path = find_image_file(src, file_id, html_file_path)
-                    if local_image_path:
-                        print(f"  - Found CloudConvert image at: {local_image_path}")
-                    else:
-                        # If we couldn't find the file exactly, try alternative approaches
-                        # 1. Look for the bare filename in known directories
-                        basename = os.path.basename(src)
-                        for search_dir in [os.path.dirname(html_file_path), images_dir, 
-                                          os.path.join(images_dir, "extracted")]:
-                            if os.path.exists(os.path.join(search_dir, basename)):
-                                local_image_path = os.path.join(search_dir, basename)
-                                print(f"  - Found image by basename in {search_dir}: {basename}")
-                                break
-                else:
-                    # Check if it's a relative path to a local file (non-CloudConvert pattern)
-                    local_image_path = None
-                    if not (src.startswith('http://') or src.startswith('https://')):
-                        # Try various approaches to find the local file
-                        potential_paths = [
-                            src,  # As-is
-                            os.path.join(os.path.dirname(html_file_path), src),  # Relative to HTML
-                            os.path.join(images_dir, os.path.basename(src)),  # In images dir
-                            os.path.join("output", os.path.basename(src)),  # In output dir
-                        ]
-                        
-                        for path in potential_paths:
-                            if os.path.exists(path):
-                                local_image_path = path
-                                print(f"  - Found local image at {local_image_path}")
-                                break
-                
-                # Process the image once we've located it or determined we need to download it
-                if local_image_path:
-                    # We found the image locally, encode it
-                    data_uri, base64_data, mime_type = encode_image_to_base64(local_image_path)
-                    if data_uri:
-                        img['src'] = data_uri  # Replace the src with data URI
-                        print(f"  - Successfully embedded local image")
-                        
-                        # Add to our images list
-                        img_format = local_image_path.split('.')[-1].lower()
-                        images.append({
-                            "filename": f"local_image_{external_image_count}.{img_format}",
-                            "data": base64_data,
-                            "mime_type": mime_type
-                        })
-                    else:
-                        print(f"  - Failed to encode local image")
-                else:
-                    # Need to download from URL
-                    download_image_count += 1
-                    print(f"  - Downloading image from URL")
-                    data_uri, base64_data, mime_type = download_image_and_convert_to_base64(src)
-                    if data_uri:
-                        img['src'] = data_uri  # Replace with data URI
-                        print(f"  - Successfully downloaded and embedded image")
-                        
-                        # Try to determine format from mime type
-                        if mime_type == "image/jpeg" or mime_type == "image/jpg":
-                            img_format = "jpg"
-                        elif mime_type == "image/png":
-                            img_format = "png"
-                        elif mime_type == "image/gif":
-                            img_format = "gif"
-                        else:
-                            img_format = "jpg"  # Default
-                        
-                        # Add to our images list
-                        images.append({
-                            "filename": f"downloaded_image_{download_image_count}.{img_format}",
-                            "data": base64_data,
-                            "mime_type": mime_type
-                        })
-                        
-                        # Also save the downloaded image for reference
-                        try:
-                            img_binary = base64.b64decode(base64_data)
-                            img_path = os.path.join(extracted_images_dir, f"downloaded_image_{download_image_count}.{img_format}")
-                            with open(img_path, 'wb') as img_file:
-                                img_file.write(img_binary)
-                            print(f"  - Saved downloaded image to {img_path}")
-                        except Exception as save_err:
-                            print(f"  - Error saving downloaded image: {str(save_err)}")
-                    else:
-                        print(f"  - Failed to download and embed image")
-            
-            # Always remove our temporary attributes
-            if img.has_attr('data-needs-base64'):
-                del img['data-needs-base64']
-            if img.has_attr('data-original-src'):
-                del img['data-original-src']
-        
-        # Get the final HTML with all images embedded
-        final_html = str(soup)
-        
-        # Trim everything before the Keywords section
-        keyword_soup = BeautifulSoup(final_html, 'html.parser')
+        # Find the Keywords section
         keywords_tag = None
-        
-        # Look for text containing "Keywords:" in any tag
-        for tag in keyword_soup.find_all(['p', 'div', 'span']):
+        for tag in soup.find_all(['p', 'div', 'span']):
             if tag.text and 'Keywords:' in tag.text:
                 keywords_tag = tag
                 break
         
-        # If we found the Keywords section, remove it and everything before it
+        # If Keywords section found, keep only what comes after it
         if keywords_tag:
-            # Create a new document to hold the content after keywords
-            new_soup = BeautifulSoup('<html><body></body></html>', 'html.parser')
-            
-            # Get the parent container that holds the keywords
+            # Find the parent container
             current = keywords_tag
             while current.parent and current.parent.name != 'body' and current.parent.name != 'html':
                 current = current.parent
+                
+            # Create a new document with only content after keywords
+            new_soup = BeautifulSoup('<html><body></body></html>', 'html.parser')
             
-            # Get all content that follows the keywords section
-            keep_content = []
+            # Get all content that comes after the keywords section
             found_keywords = False
-            for element in keyword_soup.body.contents:
+            keep_content = []
+            
+            for element in soup.body.contents:
                 if element == current:
                     found_keywords = True
                 elif found_keywords:
@@ -522,65 +261,32 @@ def process_word_to_html(word_path: str, file_id: str) -> dict:
             # Add the content after keywords to the new document
             for element in keep_content:
                 new_soup.body.append(element)
-            
-            # Update the final HTML
+                
             final_html = str(new_soup)
-            print("Successfully removed content up to and including Keywords section")
         else:
-            print("Could not find Keywords section to trim content")
+            # If no keywords section found, return the original HTML
+            final_html = html_content
         
-        # Verify that all images in the final HTML are using data URLs
-        verify_soup = BeautifulSoup(final_html, 'html.parser')
-        non_embedded_images = []
-        for img in verify_soup.find_all('img'):
-            src = img.get('src', '')
-            if src and not src.startswith('data:'):
-                non_embedded_images.append(src)
-                print(f"Warning: Found non-embedded image after processing: {src}")
-        
-        if non_embedded_images:
-            print(f"Warning: {len(non_embedded_images)} images could not be embedded:")
-            for img_src in non_embedded_images:
-                print(f"  - {img_src}")
-        else:
-            print("All images successfully embedded as data URIs")
-            
-        print(f"Successfully converted Word to HTML: {html_file_path}")
-        print(f"Found and processed {len(soup.find_all('img'))} images:")
-        print(f"  - {embedded_image_count} were already embedded")
-        print(f"  - {external_image_count} were external (local or remote)")
-        print(f"  - {cloud_convert_image_count} were from CloudConvert '_files/' pattern")
-        print(f"  - {download_image_count} needed to be downloaded")
-        
-        # Save the final HTML with embedded images
+        # Save the final HTML
         final_html_path = f"output/{file_id}_embedded.html"
         with open(final_html_path, "w", encoding="utf-8") as f:
             f.write(final_html)
         
         return {
-            "html_content": final_html,  # Return the updated HTML with all images embedded
+            "html_content": final_html,
             "html_path": final_html_path,
-            "metadata": {"title": file_id},
-            "images": images  # We still include the images array for backward compatibility
+            "metadata": {"title": file_id}
         }
     except Exception as e:
-        # Handle errors
-        error_msg = f"Error in Word to HTML conversion: {str(e)}"
-        print(error_msg)
-        traceback_info = traceback.format_exc()
-        print(f"Traceback: {traceback_info}")
-        
-        # Create simple HTML with error message
         error_html = f"""
         <div class="pdf-content">
             <h1>Error Converting Word File</h1>
-            <p>{error_msg}</p>
+            <p>{str(e)}</p>
         </div>
         """
         
         return {
             "html_content": error_html,
             "html_path": "",
-            "metadata": {"title": "Error"},
-            "images": []
+            "metadata": {"title": "Error"}
         } 
