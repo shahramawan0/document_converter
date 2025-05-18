@@ -1,0 +1,9 @@
+fastapi
+uvicorn
+python-multipart
+pymupdf
+pdf2docx
+lxml
+pillow
+beautifulsoup4
+httpx

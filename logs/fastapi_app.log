@@ -1,0 +1,14 @@
+2025-05-18 16:31:08,457 - converter_api - INFO - ==================================================
+2025-05-18 16:31:08,457 - converter_api - INFO - Starting FastAPI application
+2025-05-18 16:31:08,457 - converter_api - INFO - Platform: Windows 10
+2025-05-18 16:31:08,457 - converter_api - INFO - Current directory: D:\fspublishers\converter
+2025-05-18 16:31:08,457 - converter_api - INFO - Output directory: D:\fspublishers\converter\output
+2025-05-18 16:31:08,475 - converter_api - ERROR - Error importing modules: invalid syntax (pdf_processor.py, line 55)
+2025-05-18 16:31:08,484 - converter_api - ERROR - Traceback (most recent call last):
+  File "D:\fspublishers\converter\app\main.py", line 54, in <module>
+    from .pdf_processor import process_pdf, process_word_to_html
+  File "D:\fspublishers\converter\app\pdf_processor.py", line 55
+    else:
+    ^^^^
+SyntaxError: invalid syntax
+
